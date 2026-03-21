@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:collection';
 
+import 'package:logging/logging.dart';
 import 'package:sqlite_async/sqlite_async.dart';
 import 'package:sqlite_async/src/native/database/native_sqlite_connection_impl.dart';
 import 'package:sqlite_async/src/native/native_isolate_mutex.dart';
+
+final _logger = Logger('ConnectionPool');
 
 /// A connection pool with a single write connection and multiple read connections.
 class SqliteConnectionPool with SqliteQueries implements SqliteConnection {
@@ -67,7 +70,6 @@ class SqliteConnectionPool with SqliteQueries implements SqliteConnection {
 
   void _nextRead() {
     if (_queue.isEmpty) {
-      // Wait for queue item
       return;
     } else if (closed) {
       while (_queue.isNotEmpty) {
@@ -79,28 +81,22 @@ class SqliteConnectionPool with SqliteQueries implements SqliteConnection {
 
     while (_availableReadConnections.isNotEmpty &&
         _availableReadConnections.last.closed) {
-      // Remove connections that may have errored
       final connection = _availableReadConnections.removeLast();
       _allReadConnections.remove(connection);
     }
 
     if (_availableReadConnections.isEmpty &&
         _allReadConnections.length == maxReaders) {
-      // Wait for available connection
       return;
     }
 
     if (_availableReadConnections.isEmpty &&
         _runningWithAllConnectionsCount > 0) {
-      // Wait until [withAllConnections] is done. Otherwise we could spawn a new
-      // reader while the user is configuring all the connections,
-      // e.g. a global open factory configuration shared across all connections.
       return;
     }
 
     var nextItem = _queue.removeFirst();
     while (nextItem.completer.isCompleted) {
-      // This item already timed out - try the next one if available
       if (_queue.isEmpty) {
         return;
       }
@@ -109,14 +105,14 @@ class SqliteConnectionPool with SqliteQueries implements SqliteConnection {
 
     nextItem.lockTimer?.cancel();
 
+
     nextItem.completer.complete(Future.sync(() async {
       final nextConnection = _availableReadConnections.isEmpty
           ? await _expandPool()
           : _availableReadConnections.removeLast();
       try {
-        // At this point the connection is expected to be available immediately.
-        // No need to calculate a new lockTimeout here.
         final result = await nextConnection.readLock(nextItem.callback);
+        _logger.fine('done, queue=${_queue.length}');
         return result;
       } finally {
         _availableReadConnections.add(nextConnection);
@@ -131,6 +127,9 @@ class SqliteConnectionPool with SqliteQueries implements SqliteConnection {
     if (closed) {
       throw ClosedException();
     }
+    _logger.fine('readLock(${debugContext ?? "?"}), '
+        'queue=${_queue.length}, '
+        'available=${_availableReadConnections.length}/$maxReaders');
     final zone = _getZone(debugContext: debugContext ?? 'get*()');
     final item = _PendingItem((ctx) {
       return zone.runUnary(callback, ctx);
