@@ -22,7 +22,7 @@ mixin SqliteQueries implements SqliteWriteContext, SqliteConnection {
       [List<Object?> parameters = const []]) {
     return readLock((ctx) async {
       return ctx.getAll(sql, parameters);
-    }, debugContext: 'getAll()');
+    }, debugContext: 'getAll(${sql.length > 60 ? '${sql.substring(0, 60)}...' : sql})');
   }
 
   @override
